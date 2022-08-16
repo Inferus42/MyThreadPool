@@ -1,6 +1,6 @@
-﻿    using System;
+using System;
 
-namespace MyThreadPoolConsole 
+namespace MyThreadPoolConsole
 {
     internal class Program
     {
@@ -8,7 +8,7 @@ namespace MyThreadPoolConsole
         {
             var threadPool = new MyThreadPool();
 
-            threadPool.QueueUserWorkItem(() =>
+            var tr1 = threadPool.QueueUserWorkItem(() =>
             {
                 ExecuteMethod1();
             },
@@ -17,7 +17,7 @@ namespace MyThreadPoolConsole
                 Console.WriteLine($"Done 1 with status {ts.Success}");
             });
 
-            threadPool.QueueUserWorkItem(() =>
+            var tr2 = threadPool.QueueUserWorkItem(() =>
             {
                 ExecuteMethod2();
             },
@@ -26,16 +26,67 @@ namespace MyThreadPoolConsole
                 Console.WriteLine($"Done 2 with status {ts.Success}");
             });
 
+            var tr3 = threadPool.QueueUserWorkItem(() =>
+            {
+                ExecuteMethod3();
+            },
+            (ts) =>
+            {
+                Console.WriteLine($"Done 3 with status {ts.Success}");
+            });
+
+            var tr4 = threadPool.QueueUserWorkItem(() =>
+            {
+                ExecuteMethod4();
+            },
+            (ts) =>
+            {
+                Console.WriteLine($"Done 4 with status {ts.Success}");
+            });
+
+            var tr5 = threadPool.QueueUserWorkItem(() =>
+            {
+                ExecuteMethod5();
+            },
+            (ts) =>
+            {
+                Console.WriteLine($"Done 5 with status {ts.Success}");
+            });
+
+            tr5.token.Cancel();
+
+            Console.WriteLine($"Done main");
+
         }
 
         private static void ExecuteMethod1()
         {
             Console.WriteLine("ExecuteMethod1");
+            Thread.Sleep(1000);
         }
 
         private static void ExecuteMethod2()
         {
             Console.WriteLine("ExecuteMethod2");
+            Thread.Sleep(1000);
+        }
+
+        private static void ExecuteMethod3()
+        {
+            Console.WriteLine("ExecuteMethod3");
+            Thread.Sleep(1000);
+        }
+
+        private static void ExecuteMethod4()
+        {
+            Console.WriteLine("ExecuteMethod4");
+            Thread.Sleep(1000);
+        }
+
+        private static void ExecuteMethod5()
+        {
+            Console.WriteLine("ExecuteMethod5");
+            Thread.Sleep(1000);
         }
     }
 
@@ -46,7 +97,7 @@ namespace MyThreadPoolConsole
     {
         public Guid ID;
         public bool IsSimpleTask = false;
-        public WaitCallback Finished;
+        public CancellationTokenSource token = new CancellationTokenSource();
     }
     public class TaskStatus
     {
@@ -57,12 +108,12 @@ namespace MyThreadPoolConsole
 
     public class MyThreadPool
     {
-        private const int MAX = 8;
-        private const int MIN = 3; 
+        private const int MAX = 1;
+        private const int MIN = 0;
         private const int MIN_WAIT = 10;
         private const int MAX_WAIT = 15000;
         private const int CLEANUP_INTERVAL = 60000;
-        private const int SCHEDULING_INTERVAL = 10; 
+        private const int SCHEDULING_INTERVAL = 10;
 
         private static readonly MyThreadPool _instance = new MyThreadPool();
 
@@ -86,14 +137,14 @@ namespace MyThreadPoolConsole
             Finished,
             Aborted
         }
-        class TaskHandle 
+        class TaskHandle
         {
-            public ClientHandle Token;  
-            public UserTask task; 
-            public Action<TaskStatus> callback; 
+            public ClientHandle Token;
+            public UserTask task;
+            public Action<TaskStatus> callback;
         }
 
-        class TaskItem 
+        class TaskItem
         {
             public TaskHandle taskHandle;
             public Thread handler;
@@ -110,7 +161,7 @@ namespace MyThreadPoolConsole
             ReadyQueue = new Queue<TaskHandle>();
             Pool = new List<TaskItem>();
 
-            InitPoolWithMinCapacity(); 
+            InitPoolWithMinCapacity();
 
             DateTime LastCleanup = DateTime.Now;
 
@@ -149,7 +200,7 @@ namespace MyThreadPoolConsole
                         if (!Added) break;
                     }
                     if ((DateTime.Now - LastCleanup) > TimeSpan.FromMilliseconds(CLEANUP_INTERVAL))
-                     {
+                    {
                         CleanupPool();
                         LastCleanup = DateTime.Now;
                     }
@@ -169,7 +220,7 @@ namespace MyThreadPoolConsole
             for (int i = 0; i <= MIN; i++)
             {
                 TaskItem ti = new TaskItem() { taskState = TaskState.Notstarted };
-                ti.taskHandle = new TaskHandle() { task = () => { } };
+                ti.taskHandle = new TaskHandle() { task = () => { }, Token = new ClientHandle() };
                 ti.taskHandle.callback = (taskStatus) => { };
                 ti.taskHandle.Token = new ClientHandle() { ID = Guid.NewGuid() };
                 AddTaskToPool(ti);
@@ -182,15 +233,25 @@ namespace MyThreadPoolConsole
             {
                 do
                 {
+                    if (taskItem.taskHandle.Token.token.IsCancellationRequested)
+                    {
+                        taskItem.taskState = TaskState.Aborted;
+                        TaskStatus taskStatus = new TaskStatus() { Success = false };
+                        taskItem.taskHandle.callback(taskStatus);
+                    }
+
                     bool Enter = false;
 
-                    if (taskItem.taskState == TaskState.Aborted) break;
-
-                    if (taskItem.taskState == TaskState.Notstarted)
+                    lock (taskItem)
                     {
-                        taskItem.taskState = TaskState.Processing;
-                        taskItem.startTime = DateTime.Now;
-                        Enter = true;
+                        if (taskItem.taskState == TaskState.Aborted) break;
+
+                        if (taskItem.taskState == TaskState.Notstarted)
+                        {
+                            taskItem.taskState = TaskState.Processing;
+                            taskItem.startTime = DateTime.Now;
+                            Enter = true;
+                        }
                     }
                     if (Enter)
                     {
@@ -221,7 +282,7 @@ namespace MyThreadPoolConsole
                         }
                     }
                     Thread.Yield(); Thread.Sleep(MIN_WAIT);
-                } while (true); 
+                } while (true);
             });
             taskItem.handler.Start();
             Pool.Add(taskItem);
@@ -256,7 +317,7 @@ namespace MyThreadPoolConsole
                     thandle.callback = null;
                     thandle.Token = null;
                 }
-                else 
+                else
                 {
                     int itemCount = Instance.ReadyQueue.Count;
                     TaskItem taskItem = null;
@@ -273,10 +334,11 @@ namespace MyThreadPoolConsole
                                 taskItem.taskState = TaskState.Aborted;
                                 taskItem.taskHandle.callback = null;
                             }
-                            if (taskItem.taskState == TaskState.Aborted) 
+                            if (taskItem.taskState == TaskState.Aborted)
                             {
                                 try
                                 {
+                                    taskItem.handler.Abort();
                                     taskItem.handler.Priority = ThreadPriority.BelowNormal;
                                     taskItem.handler.IsBackground = true;
                                 }
@@ -292,7 +354,7 @@ namespace MyThreadPoolConsole
         private void CleanupPool()
         {
             List<TaskItem> filteredTask = null;
-            lock (criticalLock) 
+            lock (criticalLock)
             {
                 filteredTask = Pool.Where(ti => ti.taskHandle.Token.IsSimpleTask == true &&
                   (DateTime.Now - ti.startTime) > TimeSpan.FromMilliseconds(MAX_WAIT)).ToList();
@@ -304,11 +366,11 @@ namespace MyThreadPoolConsole
             lock (criticalLock)
             {
                 filteredTask = Pool.Where(ti => ti.taskState == TaskState.Aborted).ToList();
-                foreach (var taskItem in filteredTask) 
+                foreach (var taskItem in filteredTask)
                 {
                     try
                     {
-                        taskItem.handler.Abort(); 
+                        taskItem.handler.Abort();
                         taskItem.handler.Priority = ThreadPriority.Lowest;
                         taskItem.handler.IsBackground = true;
                     }
@@ -316,7 +378,7 @@ namespace MyThreadPoolConsole
                     Pool.Remove(taskItem);
                 }
                 int total = Pool.Count;
-                if (total >= MIN) 
+                if (total >= MIN)
                 {
                     filteredTask = Pool.Where(ti => ti.taskState == TaskState.Finished).ToList();
                     foreach (var taskItem in filteredTask)
